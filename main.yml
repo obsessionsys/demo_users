@@ -1,0 +1,112 @@
+---
+- hosts: all
+  user: root
+
+  tasks:
+  - name: "Parse file names into variables"
+    find: paths="{{ path_user_files }}" patterns="*" recurse=yes
+    register: spec_list
+    delegate_to: localhost
+
+  - name: "Get a list of all existing files to username list"
+    set_fact:
+      existing_user_specs: "{{ spec_list.files | map(attribute='path') | map('basename') | list }}"
+    changed_when: False
+
+  - name: "Debug output of existing separate username specs"
+    debug:
+      msg: "{{ existing_user_specs }}"
+
+  - name: "Ensure sudo is installed"
+    package:
+      name: "sudo"
+      state: "present"
+    retries: "3"
+    register: "sudo_installed"
+    until: "sudo_installed is succeeded"
+
+  - name: "Ensure the sudoers.d directory is created"
+    file:
+      path: "/etc/sudoers.d"
+      owner: "root"
+      group: "root"
+      mode: "0750"
+      state: "directory"
+
+  - name: "Ensure existing sudoers file supports seperate specs users"
+    lineinfile:
+      state: "present"
+      dest: "/etc/sudoers"
+      line: "#includedir /etc/sudoers.d"
+      insertafter: "EOF"
+      validate: 'visudo -cf %s'
+
+  - name: "Create no-ssh group"
+    group:
+      name: no-ssh
+      state: present
+
+  - name: "Forbid to login no-ssh group of users"
+    lineinfile:
+      state: "present"
+      dest: "/etc/ssh/sshd_config"
+      line: "DenyGroups no-ssh"
+      insertafter: "EOF"
+    notify:
+      - restart sshd
+
+  - name: "Create usernames based on the file names"
+    user:
+      name: "{{ item }}"
+      state: present
+      createhome: yes
+      groups: no-ssh
+    with_items: "{{ existing_user_specs }}"
+
+  - name: "Ensure all authorized separate sudoer specs are properly configured"
+    template:
+      src: "sudoers_spec.j2"
+      dest: "/etc/sudoers.d/{{ item }}"
+      owner: "root"
+      group: "root"
+      mode: "0440"
+      validate: 'visudo -cf %s'
+    with_items: "{{ existing_user_specs }}"
+
+  - name: "Add cronjob for only user"
+    cron: 
+      minute: "20"
+      hour: "5"
+      weekday: "sun"
+      name: "Run script for user"
+      job: "{{ script_file }}"
+      disabled: "no"
+    become: yes
+    become_user: "{{ item }}"
+    with_items: "{{ existing_user_specs }}"
+
+  - name: Script copying file with owner and permissions
+    copy:
+      src: script.sh
+      dest: "{{ script_file }}"
+      owner: root
+      group: root
+      mode: 0777
+
+#  - name: Mail sending using Mail Module
+#    mail:
+#      host: "smtp.gmail.com"
+#      port: 587
+#      username: "example@mycompany.com"
+#      password: "mypasswd"
+#      to: "test_account <account@mycompany.com>"
+#      subject: "Hello from Ansible"
+#      body: "{{ existing_user_specs }}"
+#      secure: starttls
+
+  - debug:
+       msg: "{{ spec_list.files }}"
+
+  handlers:
+    - name: restart sshd
+      service: name=sshd state=restarted

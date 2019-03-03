@@ -1,0 +1,5 @@
+---
+ansible_ssh_user: root
+script_file: "/opt/script.sh"
+path_user_files: "/etc/ansible/users"
+
